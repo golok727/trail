@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Trail</title>
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300..700&display=swap"
+			rel="stylesheet"
+		/>
+		<style>
+			body {
+				margin: 0;
+				overflow: hidden;
+				background: #0a0a0a;
+				font-family: "Space Grotesk", sans-serif;
+			}
+
+			#canvas {
+				position: fixed;
+				top: 0;
+				left: 0;
+				width: 100%;
+				height: 100%;
+				cursor: crosshair;
+			}
+
+			.content {
+				position: fixed;
+				top: 50%;
+				left: 50%;
+				transform: translate(-50%, -50%);
+				z-index: 10;
+				text-align: center;
+				pointer-events: none;
+			}
+
+			h1 {
+				font-size: 10rem;
+				font-weight: bold;
+				background: linear-gradient(
+					to bottom right,
+					rgba(255, 255, 255, 1) 0%,
+					rgba(230, 240, 255, 0.95) 30%,
+					rgba(200, 220, 255, 0.7) 50%,
+					rgba(150, 180, 255, 0.4) 70%,
+					rgba(100, 150, 255, 0.15) 90%,
+					rgba(80, 130, 255, 0.05) 100%
+				);
+				-webkit-background-clip: text;
+				background-clip: text;
+				-webkit-text-fill-color: transparent;
+				text-shadow: 0 0 30px rgba(3, 7, 16, 0.8),
+					0 0 60px rgba(100, 150, 255, 0.6), 0 0 90px rgba(100, 150, 255, 0.4);
+				margin: 0;
+				animation: pulse 3s ease-in-out infinite;
+				filter: drop-shadow(0 0 20px rgba(7, 9, 15, 0.5));
+			}
+
+			@keyframes pulse {
+				0%,
+				100% {
+					text-shadow: 0 0 30px rgba(100, 150, 255, 0.8),
+						0 0 60px rgba(100, 150, 255, 0.6), 0 0 90px rgba(100, 150, 255, 0.4);
+				}
+				50% {
+					text-shadow: 0 0 40px rgba(150, 100, 255, 0.9),
+						0 0 80px rgba(150, 100, 255, 0.7),
+						0 0 120px rgba(150, 100, 255, 0.5);
+				}
+			}
+
+			@media (max-width: 768px) {
+				h1 {
+					font-size: 60px;
+					letter-spacing: 10px;
+				}
+			}
+		</style>
+	</head>
+	<body>
+		<div class="content">
+			<h1>Kaori</h1>
+		</div>
+		<canvas id="canvas"></canvas>
+
+		<script>
+			const canvas = document.getElementById("canvas");
+			const gl = canvas.getContext("webgl2") || canvas.getContext("webgl");
+
+			if (!gl) {
+				document.body.innerHTML =
+					'<div style="color: white; text-align: center; padding: 50px;">WebGL not supported (Use chromeee my boiii)</div>';
+				throw new Error("WebGL not supported");
+			}
+
+			function resize() {
+				canvas.width = window.innerWidth;
+				canvas.height = window.innerHeight;
+				gl.viewport(0, 0, canvas.width, canvas.height);
+				setupTextures();
+			}
+
+			const vertexShaderSource = `
+            attribute vec2 aPosition;
+            varying vec2 vUv;
+            void main() {
+                vUv = 0.5 * aPosition + 0.5;
+                gl_Position = vec4(aPosition, 0.0, 1.0);
+            }
+        `;
+
+			const trailFragmentSource = `
+            precision highp float;
+            varying vec2 vUv;
+            uniform float uTime;
+            uniform float uDeltaTime;
+            uniform vec2 uMouse;
+            uniform vec2 uMouseVelocity;
+            uniform vec2 uResolution;
+            uniform sampler2D uPreviousFrame;
+
+            #define TRAIL_FALLOFF 9000.0
+            #define FADE_EXP vec4(0.02, 0.02, 0.1, 0.1)
+            #define SCROLL_SPEED 0.0005
+            #define DISTORT_SPEED 0.02
+            #define TURB_NUM 8.0
+            #define TURB_AMP 0.6
+            #define TURB_SPEED 0.5
+            #define TURB_VEL vec2(0.1, 0.0)
+            #define TURB_FREQ 50.0
+            #define TURB_EXP 1.3
+
+            float noise(vec2 p) {
+                return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453);
+            }
+
+            vec2 turbulence(vec2 p) {
+                mat2 rot = mat2(0.6, -0.8, 0.8, 0.6);
+                vec2 turb = vec2(0.0);
+                float freq = TURB_FREQ;
+                for (float i = 0.0; i < TURB_NUM; i++) {
+                    vec2 pos = p + TURB_SPEED * i * uTime * TURB_VEL;
+                    float phase = freq * (pos * rot).y + TURB_SPEED * uTime * freq * 0.1;
+                    turb += rot[0] * sin(phase) / freq;
+                    rot *= mat2(0.6, -0.8, 0.8, 0.6);
+                    freq *= TURB_EXP;
+                }
+                return turb;
+            }
+
+            void main() {
+                vec2 ratio = min(uResolution.yx / uResolution.xy, 1.0);
+                float delta = 144.0 * uDeltaTime;
+
+                vec2 scroll = SCROLL_SPEED * vec2(1.0, vUv.y - 0.5) * ratio;
+                vec2 turb = turbulence((vUv + scroll) / ratio);
+                vec2 distort = DISTORT_SPEED * turb;
+                vec2 distortedUv = vUv + delta * scroll + delta * distort * ratio;
+
+                vec4 prev = texture2D(uPreviousFrame, distortedUv);
+
+                vec2 trailA = vUv + 0.01 * delta * turb * ratio - uMouse;
+                vec2 trailB = -uMouseVelocity;
+                float trailD = dot(trailB, trailB);
+                vec2 trailDif = trailA / ratio;
+                float falloff = 0.0;
+
+                if (trailD > 0.0) {
+                    float f = clamp(dot(trailA, trailB) / trailD, 0.0, 1.0);
+                    trailDif -= f * trailB / ratio;
+                    falloff = 1.0 / (1.0 + TRAIL_FALLOFF * dot(trailDif, trailDif));
+                    falloff *= min(trailD / (0.001 + trailD), 1.0);
+                }
+
+                vec2 suv = (uMouse - uMouseVelocity) * 2.0 - 1.0;
+                float vig = (1.0 - abs(suv.y)) * (0.5 + 0.5 * suv.x);
+
+                vec2 nuv = gl_FragCoord.xy / 64.0 + uTime * vec2(7.1, 9.1);
+                float n = noise(nuv);
+
+                vec4 fade = pow(vec4(n), FADE_EXP);
+                fade = exp(-2.0 * fade * uDeltaTime);
+                vec4 decay = mix(vec4(0.5, 0.5, 0.0, 0.0), prev, fade);
+
+                vec4 col = decay;
+                vec2 vel = (-trailB) / (0.01 + length(trailB));
+                col.rg -= (0.5 - abs(decay.rg - 0.5)) * (falloff * vel);
+                col.ba += falloff * (1.0 - decay.ba) * vec2(1.0, vig * vig);
+                col += (n - 0.5) / 255.0;
+
+                gl_FragColor = col;
+            }
+        `;
+
+			const displayFragmentSource = `
+            precision highp float;
+            varying vec2 vUv;
+            uniform float uTime;
+            uniform vec2 uResolution;
+            uniform sampler2D uTrailTexture;
+
+            #define STAR 5.0
+            #define FLARE 4.0
+            #define COLOR vec3(0.2, 0.3, 0.8)
+            #define STAR_NUM 12.0
+            #define STAR_AMP 0.5
+            #define STAR_SPEED 0.01
+            #define STAR_VEL vec2(1.0, 0.0)
+            #define STAR_FREQ 8.0
+            #define STAR_EXP 1.5
+            #define GLOW_RED vec3(0.5, 0.2, 0.2)
+            #define GLOW_BLUE vec3(0.3, 0.3, 0.6)
+            #define TRAIL_EXP vec3(1.4, 1.2, 1.0)
+            #define TRAIL_STRENGTH 0.4
+            #define DITHER 0.01
+            #define DITHER_RES 64.0
+
+            vec3 gamma_encode(vec3 c) {
+                return sqrt(c);
+            }
+
+            vec2 turbulence(vec2 p, float freq, float num) {
+                mat2 rot = mat2(0.6, -0.8, 0.8, 0.6);
+                vec2 turb = vec2(0.0);
+                for (float i = 0.0; i < STAR_NUM; i++) {
+                    if (i >= num) break;
+                    vec2 pos = p + turb + STAR_SPEED * i * uTime * STAR_VEL;
+                    float phase = freq * (pos * rot).y + STAR_SPEED * uTime * freq;
+                    turb += rot[0] * sin(phase) / freq;
+                    rot *= mat2(0.6, -0.8, 0.8, 0.6);
+                    freq *= STAR_EXP;
+                }
+                return turb;
+            }
+
+            vec3 star(vec2 p) {
+                vec2 suv = p * 2.0 - 1.0;
+                vec2 right = suv - vec2(1.0, 0.0);
+                right.x *= 0.7 * uResolution.x / uResolution.y;
+
+                float factor = 1.0 + 0.4 * sin(9.0 * suv.y) * sin(5.0 * (suv.x + 5.0 * uTime * STAR_SPEED));
+                vec2 turb = right + factor * STAR_AMP * turbulence(right, STAR_FREQ, STAR_NUM);
+                turb.x -= 0.5 * suv.y * suv.y;
+
+                float fade = max(4.0 * suv.y * suv.y - suv.x + 1.2, 0.001);
+                float atten = fade * max(0.5 * turb.x, -turb.x);
+
+                float ft = 0.4 * uTime;
+                vec2 fp = 8.0 * (turb + 0.5 * STAR_VEL * ft);
+                fp *= mat2(0.4, -0.3, 0.3, 0.4);
+                float f = cos(fp.x) * sin(fp.y) - 0.5;
+                float flare = f * f + 0.5 * suv.y * suv.y - 1.5 * turb.x + 0.6 * cos(0.42 * ft + 1.6 * turb.y) * cos(0.31 * ft - turb.y);
+
+                vec3 col = 0.1 * COLOR * (STAR / (atten * atten) + FLARE / (flare * flare));
+
+                const vec3 chrom = vec3(0.0, 0.1, 0.2);
+                col *= exp(p.x *
+                    cos(turb.y * 5.0 + 0.4 * (uTime + turb.x * 1.0) + chrom) *
+                    cos(turb.y * 7.0 - 0.5 * (uTime - turb.x * 1.5) + chrom) *
+                    cos(turb.y * 9.0 + 0.6 * (uTime + turb.x * 2.0) + chrom)
+                );
+
+                return col;
+            }
+
+            void main() {
+                vec2 duv = 0.9 * gl_FragCoord.xy / DITHER_RES * mat2(0.8, -0.6, 0.6, 0.8);
+                float dither = fract(sin(dot(duv, vec2(12.9898, 78.233))) * 43758.5453) - 0.5;
+
+                vec2 ratio = min(uResolution.yx / uResolution.xy, 1.0);
+                vec4 trail = texture2D(uTrailTexture, vUv);
+
+                vec2 suv = vUv * 2.0 - 1.0;
+                vec2 starUv = vUv + 0.3 * (trail.rg - 0.5) * trail.b * ratio;
+                vec3 col = star(starUv);
+
+                float vig = (1.0 - abs(suv.y)) * (0.5 + 0.5 * suv.x);
+                col *= vig * vig;
+
+                col /= 1.0 + col;
+                col = clamp(col, 0.0, 1.0);
+                col = gamma_encode(col);
+
+                float yy = suv.y + 0.03;
+                yy = max(1.0 - 10.0 * yy * yy / max(0.5 + 1.5 * starUv.x, 0.1), 0.0);
+                float light = max(0.5 + 0.5 * starUv.x, 0.0) * yy;
+
+                float tint = 3.0 * 0.0 * 0.0;
+                vec3 hue = mix(GLOW_RED, GLOW_BLUE, 1.0 + suv.x + tint);
+                float alpha = 1.0 - (1.0 - pow(yy, 30.0)) * 0.0;
+                vec3 rim = 12.0 * light * light * light * light * alpha * (0.5 + 0.5 * suv.x) * hue;
+
+                rim /= (1.0 + rim);
+                col += (1.0 - col) * rim * rim;
+                col += TRAIL_STRENGTH * hue * pow(trail.aaa, TRAIL_EXP);
+                col += DITHER * dither;
+
+                gl_FragColor = vec4(col, 1.0);
+            }
+        `;
+
+			function createShader(type, source) {
+				const shader = gl.createShader(type);
+				gl.shaderSource(shader, source);
+				gl.compileShader(shader);
+				if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+					console.error(gl.getShaderInfoLog(shader));
+					gl.deleteShader(shader);
+					return null;
+				}
+				return shader;
+			}
+
+			function createProgram(vsSource, fsSource) {
+				const vs = createShader(gl.VERTEX_SHADER, vsSource);
+				const fs = createShader(gl.FRAGMENT_SHADER, fsSource);
+				const program = gl.createProgram();
+				gl.attachShader(program, vs);
+				gl.attachShader(program, fs);
+				gl.linkProgram(program);
+				if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+					console.error(gl.getProgramInfoLog(program));
+					return null;
+				}
+				return program;
+			}
+
+			const trailProgram = createProgram(
+				vertexShaderSource,
+				trailFragmentSource
+			);
+			const displayProgram = createProgram(
+				vertexShaderSource,
+				displayFragmentSource
+			);
+
+			const positions = new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]);
+			const buffer = gl.createBuffer();
+			gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+			gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+
+			const textures = [gl.createTexture(), gl.createTexture()];
+			const framebuffers = [gl.createFramebuffer(), gl.createFramebuffer()];
+
+			function setupTextures() {
+				textures.forEach((tex, i) => {
+					gl.bindTexture(gl.TEXTURE_2D, tex);
+					gl.texImage2D(
+						gl.TEXTURE_2D,
+						0,
+						gl.RGBA,
+						canvas.width,
+						canvas.height,
+						0,
+						gl.RGBA,
+						gl.UNSIGNED_BYTE,
+						null
+					);
+					gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+					gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+					gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+					gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+					gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffers[i]);
+					gl.framebufferTexture2D(
+						gl.FRAMEBUFFER,
+						gl.COLOR_ATTACHMENT0,
+						gl.TEXTURE_2D,
+						tex,
+						0
+					);
+				});
+				gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+			}
+
+			let mouse = [0.5, 0.5];
+			let lastMouse = [0.5, 0.5];
+			let mouseVel = [0, 0];
+			let autoMouse = [0.5, 0.5];
+			let userInteracting = false;
+			let interactionTimeout = null;
+
+			window.addEventListener("mousemove", (e) => {
+				mouse = [e.clientX / canvas.width, 1 - e.clientY / canvas.height];
+				userInteracting = true;
+				clearTimeout(interactionTimeout);
+				interactionTimeout = setTimeout(() => {
+					userInteracting = false;
+				}, 2000);
+			});
+
+			window.addEventListener("touchmove", (e) => {
+				const touch = e.touches[0];
+				mouse = [
+					touch.clientX / canvas.width,
+					1 - touch.clientY / canvas.height,
+				];
+				userInteracting = true;
+				clearTimeout(interactionTimeout);
+				interactionTimeout = setTimeout(() => {
+					userInteracting = false;
+				}, 2000);
+			});
+
+			let lastTime = 0;
+			let frameIndex = 0;
+
+			function render(time) {
+				time *= 0.001;
+				const deltaTime = Math.min(time - lastTime, 0.05);
+				lastTime = time;
+
+				if (!userInteracting) {
+					const t = time * 0.3;
+					const t2 = time * 0.4;
+					const t3 = time * 0.23;
+
+					const noise1 = Math.sin(t * 2.1) * Math.cos(t * 1.7);
+					const noise2 = Math.sin(t2 * 1.3) * Math.cos(t2 * 2.3);
+					const noise3 = Math.sin(t3 * 3.1) * Math.cos(t3 * 1.1);
+
+					autoMouse[0] =
+						0.5 +
+						Math.sin(t * 0.8) * 0.25 +
+						Math.cos(t2 * 0.5) * 0.15 +
+						noise1 * 0.1 +
+						noise3 * 0.08;
+
+					autoMouse[1] =
+						0.5 +
+						Math.cos(t * 0.6) * 0.2 +
+						Math.sin(t2 * 0.7) * 0.18 +
+						noise2 * 0.12 +
+						Math.sin(t3 * 1.5) * 0.09;
+
+					autoMouse[0] = Math.max(0.1, Math.min(0.9, autoMouse[0]));
+					autoMouse[1] = Math.max(0.1, Math.min(0.9, autoMouse[1]));
+
+					mouse = autoMouse;
+				}
+
+				mouseVel = [mouse[0] - lastMouse[0], mouse[1] - lastMouse[1]];
+				lastMouse = [mouse[0], mouse[1]];
+
+				const currentFrame = frameIndex % 2;
+				const nextFrame = (frameIndex + 1) % 2;
+
+				gl.bindFramebuffer(gl.FRAMEBUFFER, framebuffers[nextFrame]);
+				gl.useProgram(trailProgram);
+
+				const aPos = gl.getAttribLocation(trailProgram, "aPosition");
+				gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+				gl.enableVertexAttribArray(aPos);
+				gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+				gl.uniform1f(gl.getUniformLocation(trailProgram, "uTime"), time);
+				gl.uniform1f(
+					gl.getUniformLocation(trailProgram, "uDeltaTime"),
+					deltaTime
+				);
+				gl.uniform2f(
+					gl.getUniformLocation(trailProgram, "uMouse"),
+					mouse[0],
+					mouse[1]
+				);
+				gl.uniform2f(
+					gl.getUniformLocation(trailProgram, "uMouseVelocity"),
+					mouseVel[0],
+					mouseVel[1]
+				);
+				gl.uniform2f(
+					gl.getUniformLocation(trailProgram, "uResolution"),
+					canvas.width,
+					canvas.height
+				);
+
+				gl.activeTexture(gl.TEXTURE0);
+				gl.bindTexture(gl.TEXTURE_2D, textures[currentFrame]);
+				gl.uniform1i(gl.getUniformLocation(trailProgram, "uPreviousFrame"), 0);
+
+				gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+				gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+				gl.useProgram(displayProgram);
+
+				const aPos2 = gl.getAttribLocation(displayProgram, "aPosition");
+				gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+				gl.enableVertexAttribArray(aPos2);
+				gl.vertexAttribPointer(aPos2, 2, gl.FLOAT, false, 0, 0);
+
+				gl.uniform1f(gl.getUniformLocation(displayProgram, "uTime"), time);
+				gl.uniform2f(
+					gl.getUniformLocation(displayProgram, "uResolution"),
+					canvas.width,
+					canvas.height
+				);
+
+				gl.activeTexture(gl.TEXTURE0);
+				gl.bindTexture(gl.TEXTURE_2D, textures[nextFrame]);
+				gl.uniform1i(gl.getUniformLocation(displayProgram, "uTrailTexture"), 0);
+
+				gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+				frameIndex++;
+				requestAnimationFrame(render);
+			}
+
+			resize();
+			window.addEventListener("resize", resize);
+			requestAnimationFrame(render);
+		</script>
+	</body>
+</html>
